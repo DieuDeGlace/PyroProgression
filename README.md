@@ -1,3 +1,11 @@
+# AI-assisted fork
+
+This fork was edited by DieuDeGlace with assistance from OpenAI ChatGPT/Codex. Original authorship and upstream attribution are retained. See [BUILD.md](BUILD.md) for the current changes and build instructions.
+
+---
+
+## Historical upstream documentation
+
 # PyroProgression
 A Cube World steam release mod that adds an alpha like XP and levelling playstyle.
 

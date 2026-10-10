@@ -361,3 +361,13 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# Local build outputs and gameplay data
+build*/
+*.dll
+*.exe
+*.lib
+*.exp
+*.obj
+*.pdb
+*.state
+*-audit.txt

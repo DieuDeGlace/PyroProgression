@@ -1,5 +1,6 @@
 #include "main.h"
 #include <map>
+#include <algorithm>
 
 // Public variables.
 // For example: int number = 10;
@@ -101,26 +102,7 @@ class Mod : GenericMod {
 				return 1;
 			}
 
-			// Set new center region
-			player->entity_data.equipment.unk_item.region = player->entity_data.current_region;
-
-			// Reset HP of all creatures
-			for (cube::Creature* creature : game->world->creatures)
-			{
-				if (creature->entity_data.hostility_type == cube::Creature::EntityBehaviour::Player)
-				{
-					// To ensure that this command is not misused as a full heal
-					creature->entity_data.HP = std::min<float>(creature->GetMaxHP(), creature->entity_data.HP);
-				}
-				else
-				{
-					creature->entity_data.HP = creature->GetMaxHP();
-				}
-				
-			}
-
-			// Display succes message
-			game->PrintMessage(L"[Notification] Correctly recentered player region.\n", 0, 255, 0);
+			game->PrintMessage(L"Enemy levels follow player level; existing gear levels stay fixed.\n", 0, 255, 0);
 			return 1;
 		}
 		return 0;
@@ -141,6 +123,8 @@ class Mod : GenericMod {
 	virtual void OnGameTick(cube::Game* game) override {
 		static bool init = false;
 		cube::Creature* player = game->GetPlayer();
+		if (!player) return;
+		RelativeTick(game);
 		cube::Creature::EntityData* entity_data = &player->entity_data;
 
 		if (!init)
@@ -168,6 +152,12 @@ class Mod : GenericMod {
 		node->SetVisibility(true);
 		node->Translate(game->width / 2, game->height, -200, -100);
 
+		// Preserve enemy health fractions when player-relative levels change.
+		std::vector<std::pair<cube::Creature*, float>> fractions;
+		if (entity_data->XP >= player->GetXPForLevelup()) for (auto c : game->world->creatures) {
+			if (!c || c == player || c->entity_data.HP <= 0) continue;
+			float maximum=c->GetMaxHP(); if (maximum>0) fractions.push_back({c,std::clamp(c->entity_data.HP/maximum,0.f,1.f)});
+		}
 		// Handle levelups
 		while (entity_data->XP >= player->GetXPForLevelup())
 		{
@@ -177,43 +167,16 @@ class Mod : GenericMod {
 			OnLevelUp(game, player);
 		}
 
-		// Set starting region if not set
-		// Todo: Change if world settings are implemented
-		cube::Item* storage = &entity_data->equipment.unk_item;
-		if (storage->modifier == 0)
-		{
-			storage->modifier = 1;
-			storage->region = entity_data->current_region;
-
-			const int modifier = 0;
-
-			entity_data->equipment.weapon_right.modifier = modifier;
-			entity_data->equipment.weapon_left.modifier = modifier;
-			entity_data->equipment.chest.modifier = modifier;
-			entity_data->equipment.feet.modifier = modifier;
-			entity_data->equipment.hands.modifier = modifier;
-			entity_data->equipment.neck.modifier = modifier;
-			entity_data->equipment.shoulder.modifier = modifier;
-			entity_data->equipment.ring_left.modifier = modifier;
-			entity_data->equipment.ring_right.modifier = modifier;
-
-			if (player->inventory_tabs.size() > 1)
-			{
-				for (cube::ItemStack& itemstack : player->inventory_tabs.at(0))
-				{
-					itemstack.item.modifier = modifier;
-				}
-			}
-		}
+		for(auto entry:fractions) entry.first->entity_data.HP=entry.first->GetMaxHP()*entry.second;
 
 		uint32 size = 0;
 		if (cube::SteamNetworking()->IsP2PPacketAvailable(&size, 2))
 		{
-			u8 buffer[size];
+			std::vector<u8> buffer(size);
 			CSteamID id;
-			cube::SteamNetworking()->ReadP2PPacket(&buffer, size, &size, &id, 2);
+			cube::SteamNetworking()->ReadP2PPacket(buffer.data(), size, &size, &id, 2);
 
-			BytesIO package(buffer, size);
+			BytesIO package(buffer.data(), size);
 
 			int pkg_id = package.Read<int>();
 			int xp = package.Read<int>();
@@ -265,7 +228,8 @@ class Mod : GenericMod {
 				xp_gain *= std::pow((float)level / (float)player->entity_data.level, 3);
 			}
 			else {
-				xp_gain *= (1 + multiplier * (GetCreatureLevel(creature) - player->entity_data.level)) * std::powf(1.05f, GetCreatureLevel(creature) - player->entity_data.level);
+				int difference=std::clamp(GetCreatureLevel(creature)-int(player->entity_data.level),0,20);
+				xp_gain *= (1 + multiplier * difference) * std::powf(1.05f, difference);
 			}
 
 			if ((creature->entity_data.appearance.flags2 & (1 << (int)cube::Creature::AppearanceModifiers::IsBoss)) != 0)
@@ -293,7 +257,7 @@ class Mod : GenericMod {
 				BytesIO bytesio;
 
 				bytesio.Write<u32>(0x01); //Packet ID
-				bytesio.Write<u32>((int)(xp_gain / game->host.connections.size())); //Message size
+				bytesio.Write<u32>((int)(xp_gain / std::max<size_t>(1, game->host.connections.size()))); //Message size
 
 				for (auto& conn : game->host.connections)
 				{
@@ -359,6 +323,7 @@ class Mod : GenericMod {
 		Setup_XP_Overwrite();
 		Setup_LevelDisplayOverwrite();
 		Setup_GearScalingOverwrite();
+		if (!SetupRelativeLoot()) OutputDebugStringA("PyroProgression: native loot hook did not match; bonus drop levels are unavailable.\n");
 
 		// ##### PLAYER ######
 		// Defense
