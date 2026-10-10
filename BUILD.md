@@ -1,4 +1,4 @@
-# PyroProgression fork: player-relative scaling
+# PyroProgression fork: discovery-locked scaling
 
 Edited with AI assistance (OpenAI ChatGPT/Codex). Based on upstream [PyroProgression](https://github.com/gijsgroenewegen/PyroProgression), tag `v.1.4`, and its original CWSDK revision `7301c4635ed9778fe8db29793aa0981354ef6447`. Original upstream code remains attributed to its authors; no new blanket license is asserted for upstream files without a license notice.
 

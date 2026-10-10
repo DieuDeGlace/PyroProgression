@@ -1,6 +1,6 @@
 cmake_minimum_required (VERSION 3.8)
 project(project_PyroProgression)
-option(DISCOVERY_LOCK_DEFAULT "Lock region baselines on first entry" OFF)
+option(DISCOVERY_LOCK_DEFAULT "Lock region baselines on first entry" ON)
 add_subdirectory(CWSDK)
 add_library (PyroProgression SHARED "main.cpp" "src/XPOverwrite.h"  "src/LevelDisplayOverwrite.h" "src/utility.h" "src/utility.cpp" "src/GearScalingOverWrite.h" "src/GoldDropOverWrite.h")
 target_link_libraries (PyroProgression LINK_PUBLIC CWSDK)

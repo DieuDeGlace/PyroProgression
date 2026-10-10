@@ -1,5 +1,7 @@
 # AI-assisted fork
 
+This is the **discovery-locked** branch: region level baselines are saved on first entry. For continuously player-relative scaling, use `main`.
+
 This fork was edited by DieuDeGlace with assistance from OpenAI ChatGPT/Codex. Original authorship and upstream attribution are retained. See [BUILD.md](BUILD.md) for the current changes and build instructions.
 
 ---
