@@ -58,6 +58,30 @@ int legacy(cube::Item *i) {
     return 1 + LEVELS_PER_REGION * GetRegionDistance(i->region) +
            GetLevelVariation(i->modifier, LEVELS_PER_REGION);
 }
+void registerOwnedGear(cube::Item *i, int player) {
+    if (!i || i->category < 3 || i->category > 9)
+        return;
+    auto k = itemKey(i);
+    auto it = gear.find(k);
+    int saved = it == gear.end() ? 0 : it->second;
+    int level = progression::ownedGearLevel(player, saved, saved ? legacy(i) : 0,
+                                            i->region == IntVector2(0, 0), k);
+    if (it == gear.end())
+        registerGear(i, level);
+    else if (level != saved) {
+        it->second = level;
+        save('G', k, level);
+    }
+}
+IntVector2 creatureRegion(cube::Creature *c) {
+    auto r = c->entity_data.current_region;
+    if (r == IntVector2(0, 0)) {
+        auto block = [](int64_t n) { return int(n / 65536 - (n < 0 && n % 65536 != 0)); };
+        auto g = cube::GetGame();
+        g->world->GetRegion(&r, block(c->entity_data.position.x), block(c->entity_data.position.y));
+    }
+    return r;
+}
 void session() {
     auto g = cube::GetGame();
     auto p = g && g->world ? g->GetPlayer() : nullptr;
@@ -93,13 +117,14 @@ void session() {
     locked = DISCOVERY_LOCK_DEFAULT != 0 ||
              GetPrivateProfileIntW(L"PyroProgression", L"LockDiscoveredRegions", 0,
                                    L".\\Mods\\PyroProgression.ini") != 0;
+    int player = playerLevel();
     auto &e = p->entity_data.equipment;
     for (auto i : {&e.neck, &e.chest, &e.feet, &e.hands, &e.shoulder, &e.weapon_left,
                    &e.weapon_right, &e.ring_left, &e.ring_right})
-        registerGear(i, legacy(i));
+        registerOwnedGear(i, player);
     for (auto &tab : p->inventory_tabs)
         for (auto &stack : tab)
-            registerGear(&stack.item, legacy(&stack.item));
+            registerOwnedGear(&stack.item, player);
 }
 int biome(IntVector2 r) {
     auto key = progression::regionRoll(0, r.x, r.y);
@@ -124,11 +149,15 @@ void drop(cube::World *w, cube::Item *i, LongVector3 *pos, float a, float b, int
         std::lock_guard<std::recursive_mutex> guard(gate);
         session();
         if (sessionPlayer && i && i->category >= 3 && i->category <= 9) {
-            int enemy = playerLevel();
+            int player = playerLevel();
+            int enemy = player;
+            int sourceBiome = 0;
             if (source &&
-                source->entity_data.hostility_type == cube::Creature::EntityBehaviour::Hostile)
+                source->entity_data.hostility_type == cube::Creature::EntityBehaviour::Hostile) {
                 enemy = GetCreatureLevel(source);
-            registerGear(i, progression::lootLevel(playerLevel(), enemy, itemKey(i)));
+                sourceBiome = biome(creatureRegion(source));
+            }
+            registerGear(i, progression::lootLevel(player, enemy, sourceBiome, itemKey(i)));
         }
     }
     originalDrop(w, i, pos, a, b, amount, source, owner);
@@ -147,7 +176,8 @@ int RelativeItemLevel(cube::Item *i) {
     auto it = gear.find(k);
     if (it != gear.end())
         return it->second;
-    registerGear(i, progression::lootLevel(playerLevel(), playerLevel(), k));
+    int player = playerLevel();
+    registerGear(i, progression::lootLevel(player, player, 0, k));
     return gear[k];
 }
 int RelativeCreatureLevel(cube::Creature *c) {
@@ -160,11 +190,7 @@ int RelativeCreatureLevel(cube::Creature *c) {
         c->entity_data.hostility_type == cube::Creature::EntityBehaviour::Pet)
         return c->entity_data.level;
     auto g = cube::GetGame();
-    IntVector2 r = c->entity_data.current_region;
-    if (r == IntVector2(0, 0)) {
-        auto block = [](int64_t n) { return int(n / 65536 - (n < 0 && n % 65536 != 0)); };
-        g->world->GetRegion(&r, block(c->entity_data.position.x), block(c->entity_data.position.y));
-    }
+    IntVector2 r = creatureRegion(c);
     return progression::enemyLevel(basis(r), biome(r),
                                    progression::regionRoll(g->world->seed, r.x, r.y), c->id);
 }
