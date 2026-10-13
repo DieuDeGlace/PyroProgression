@@ -314,7 +314,7 @@ class Mod : GenericMod {
         Setup_GearScalingOverwrite();
         if (!SetupRelativeLoot())
             OutputDebugStringA(
-                "PyroProgression: native loot hook did not match; bonus drop levels are unavailable.\n");
+                "PyroProgression: native progression adapter failed; loot/starter hooks may be unavailable.\n");
 
         // ##### PLAYER ######
         // Defense
