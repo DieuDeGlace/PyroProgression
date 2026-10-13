@@ -29,20 +29,38 @@ inline int tier(int biome) {
         return 0;
     }
 }
+inline int boundedPlayerLevel(int player) {
+    return std::max(1, std::min(player, 1000000));
+}
 inline int enemyLevel(int player, int biome, uint64_t region, uint64_t entity) {
-    player = std::max(1, std::min(player, 1000000));
+    player = boundedPlayerLevel(player);
     int t = tier(biome);
     // Region roll stays fixed across reloads; creature variation is only a few levels.
     int percent = (t == 0 ? 90 : t == 1 ? 108 : 125) + int(region % 9);
     int result = (player * percent + 50) / 100 + int(mix(entity) % 3) - 1;
     return std::max(t ? player + t : 1, result);
 }
-inline int lootLevel(int player, int enemy, uint64_t roll) {
-    player = std::max(1, std::min(player, 1000000));
+inline int maximumLootLevel(int player) {
+    player = boundedPlayerLevel(player);
+    // Hard biome, highest region roll and highest creature variation.
+    return std::max(player + 2, (player * 133 + 50) / 100 + 1);
+}
+inline int lootLevel(int player, int enemy, int biome, uint64_t roll) {
+    player = boundedPlayerLevel(player);
     int ordinary = std::max(1, player - int(roll % 3));
-    // One in three drops from an above-level enemy can be above the player.
-    if (enemy > player && mix(roll) % 3 == 0)
+    // Only moderate/hard biome enemies can grant above-player-level drops.
+    if (tier(biome) > 0 && enemy > player && mix(roll) % 3 == 0)
         return player + 1 + int(mix(roll + 1) % uint64_t(enemy - player));
     return ordinary;
+}
+inline bool legacyDistanceArtifact(int player, int saved, int legacy, bool originRegion) {
+    // Native starter gear can carry the (0,0) region sentinel. Only repair saved
+    // records that still match that distance artifact and exceed relative loot's ceiling.
+    return originRegion && saved == legacy && saved > maximumLootLevel(player);
+}
+inline int ownedGearLevel(int player, int saved, int legacy, bool originRegion, uint64_t roll) {
+    if (saved > 0 && !legacyDistanceArtifact(player, saved, legacy, originRegion))
+        return saved;
+    return lootLevel(player, player, 0, roll);
 }
 } // namespace progression
