@@ -34,23 +34,79 @@ inline int tier(int biome) {
         return 0;
     }
 }
-// Enemy level: 90% (tier 0), 108% or 125% of the player level, +0..8% per region,
-// +-1 per creature; harder tiers are always above the player.
+inline bool dungeonType(int type) {
+    switch (type) {
+    case 4:
+    case 7:
+    case 8:
+    case 12:
+    case 15:
+    case 40:
+    case 41:
+    case 42:
+    case 43:
+    case 44:
+    case 45:
+    case 46:
+    case 47:
+        return true;
+    default:
+        return false;
+    }
+}
+inline int boundedPlayerLevel(int player) {
+    return std::max(1, std::min(player, 1000000));
+}
 inline int enemyLevel(int player, int biome, uint64_t region, uint64_t entity) {
-    player = std::max(1, std::min(player, 1000000));
+    player = boundedPlayerLevel(player);
     int t = tier(biome);
     // Region roll stays fixed across reloads; creature variation is only a few levels.
     int percent = (t == 0 ? 90 : t == 1 ? 108 : 125) + int(region % 9);
     int result = (player * percent + 50) / 100 + int(mix(entity) % 3) - 1;
     return std::max(t ? player + t : 1, result);
 }
-// Level of a gear drop: usually the player level minus 0..2.
-inline int lootLevel(int player, int enemy, uint64_t roll) {
-    player = std::max(1, std::min(player, 1000000));
-    int ordinary = std::max(1, player - int(roll % 3));
-    // One in three drops from an above-level enemy can be above the player.
-    if (enemy > player && mix(roll) % 3 == 0)
-        return player + 1 + int(mix(roll + 1) % uint64_t(enemy - player));
-    return ordinary;
+inline int maximumLootLevel(int player) {
+    player = boundedPlayerLevel(player);
+    // Hard biome's source-free loot band or its strongest relative enemy.
+    return std::max(player + 3, (player * 133 + 50) / 100 + 1);
+}
+inline int lootRarity(int biome, uint64_t roll, bool dungeon = false) {
+    // Native rarities 0..4 are the game's 1..5 stars. Every tier stays possible,
+    // with 3/4/5 stars most likely in easy/moderate/hard outdoor regions.
+    static constexpr int weights[2][3][5] = {
+        {{10, 20, 50, 15, 5}, {5, 10, 25, 45, 15}, {3, 7, 15, 30, 45}},
+        {{4, 11, 35, 30, 20}, {2, 5, 12, 46, 35}, {1, 4, 8, 32, 55}}};
+    int percentile = int(roll % 100);
+    for (int rarity = 0; rarity < 4; rarity++) {
+        int weight = weights[dungeon ? 1 : 0][tier(biome)][rarity];
+        if (percentile < weight)
+            return rarity;
+        percentile -= weight;
+    }
+    return 4;
+}
+inline int lootLevel(int player, int enemy, int biome, uint64_t roll, bool dungeon = false) {
+    player = boundedPlayerLevel(player);
+    int t = tier(biome);
+    // Most loot matches the player; harder biomes raise the above-level chance
+    // from 10% to 20% to 30%. Dungeon rewards add five percentage points.
+    int aboveChance = 10 + 10 * t + (dungeon ? 5 : 0);
+    if (mix(roll) % 100 >= uint64_t(aboveChance))
+        return player;
+    // Above-player enemies bound their own drops. Chests and other rewards
+    // without such a source have a small, biome-dependent 1/2/3-level band.
+    int ceiling = enemy > player ? std::min(enemy, maximumLootLevel(player)) : player + t + 1;
+    return player + 1 + int(mix(roll + 1) % uint64_t(ceiling - player));
+}
+inline bool legacyDistanceArtifact(int player, int saved, int legacy, bool originRegion) {
+    // Native starter gear can carry the (0,0) region sentinel. Only repair saved
+    // records that still match that distance artifact and exceed relative loot's ceiling.
+    return originRegion && saved == legacy && saved > maximumLootLevel(player);
+}
+inline int ownedGearLevel(int player, int saved, int legacy, bool originRegion, uint64_t /*roll*/) {
+    if (saved > 0 && !legacyDistanceArtifact(player, saved, legacy, originRegion))
+        return saved;
+    // Initial inventory registration is separate from newly generated loot.
+    return boundedPlayerLevel(player);
 }
 } // namespace progression
