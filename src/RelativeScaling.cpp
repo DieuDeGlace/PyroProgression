@@ -37,24 +37,54 @@ Data &data() {
     static Data value;
     return value;
 }
-#define gate data().gate
-#define gear data().gear
-#define regions data().regions
-#define biomes data().biomes
-#define rarities data().rarities
-#define completed data().completed
-#define creatureLocations data().creatureLocations
-#define deadBosses data().deadBosses
+std::recursive_mutex &gate() {
+    return data().gate;
+}
+std::unordered_map<uint64_t, int> &gear() { // Item key -> fixed level.
+    return data().gear;
+}
+std::unordered_map<uint64_t, int> &regions() { // Region key -> discovery level.
+    return data().regions;
+}
+std::unordered_map<uint64_t, int> &biomes() { // Region roll -> native biome (cache).
+    return data().biomes;
+}
+std::unordered_map<uint64_t, int> &rarities() { // Item key -> final star rarity.
+    return data().rarities;
+}
+std::unordered_map<uint64_t, int> &completed() { // Location key -> completed.
+    return data().completed;
+}
+std::unordered_map<int64_t, std::pair<uint64_t, unsigned>> &creatureLocations() {
+    return data().creatureLocations;
+}
+std::unordered_map<int64_t, int> &deadBosses() { // Boss IDs already recorded.
+    return data().deadBosses;
+}
 cube::Creature *sessionPlayer = nullptr;
 cube::World *sessionWorld = nullptr;
 uint64_t identity = 0; // Hash of world seed, world name and character name.
-bool loaded = false, locked = DISCOVERY_LOCK_DEFAULT != 0;
+unsigned ticks = 0;
+bool loaded = false, locked = DISCOVERY_LOCK_DEFAULT != 0, highestPlayer = true;
 const char *statePath = "Mods/PyroRelativeLevels.state";
 
+// The local player's own level: owned gear, new loot and XP stay personal.
 int playerLevel() {
     auto g = cube::GetGame();
     auto p = g && g->world ? g->GetPlayer() : nullptr;
     return p ? std::max(1, int(p->entity_data.level)) : 1;
+}
+// Enemy scaling and discovery baselines follow the highest-level player in the
+// session, so every peer computes the same world levels in multiplayer.
+int groupLevel() {
+    int level = playerLevel();
+    auto g = cube::GetGame();
+    if (!highestPlayer || !g || !g->world)
+        return level;
+    for (auto c : g->world->creatures)
+        if (c && c->entity_data.hostility_type == cube::Creature::EntityBehaviour::Player)
+            level = std::max(level, progression::boundedPlayerLevel(int(c->entity_data.level)));
+    return level;
 }
 // Gear categories (3..9) get a fixed relative level; other items keep the legacy one.
 bool isGear(const cube::Item *i) {
@@ -90,9 +120,9 @@ void registerGear(cube::Item *i, int level) {
 }
 void assignGear(cube::Item *i, int level) {
     auto k = itemKey(i);
-    auto it = gear.find(k);
-    if (it == gear.end() || it->second != level) {
-        gear[k] = level;
+    auto it = gear().find(k);
+    if (it == gear().end() || it->second != level) {
+        gear()[k] = level;
         save('G', k, level);
     }
 }
@@ -115,11 +145,11 @@ void registerOwnedGear(cube::Item *i, int player) {
     if (!i || i->category < 3 || i->category > 9)
         return;
     auto k = itemKey(i);
-    auto it = gear.find(k);
-    int saved = it == gear.end() ? 0 : it->second;
+    auto it = gear().find(k);
+    int saved = it == gear().end() ? 0 : it->second;
     int level = progression::ownedGearLevel(player, saved, saved ? legacy(i) : 0,
                                             i->region == IntVector2(0, 0), k);
-    if (it == gear.end())
+    if (it == gear().end())
         registerGear(i, level);
     else if (level != saved) {
         it->second = level;
@@ -150,14 +180,14 @@ void session() {
         int l;
         while (in >> kind >> key >> l) {
             if (kind == 'T' && l >= 0 && l <= 4)
-                rarities[key] = l;
+                rarities()[key] = l;
             else if (l > 0 && l <= 10000000) {
                 if (kind == 'G')
-                    gear[key] = l;
+                    gear()[key] = l;
                 else if (kind == 'R')
-                    regions[key] = l;
+                    regions()[key] = l;
                 else if (kind == 'C')
-                    completed[key] = l;
+                    completed()[key] = l;
             }
         }
         loaded = true;
@@ -174,9 +204,9 @@ void session() {
     sessionPlayer = p;
     sessionWorld = g->world;
     identity = nextIdentity;
-    biomes.clear();
-    creatureLocations.clear();
-    deadBosses.clear();
+    biomes().clear();
+    creatureLocations().clear();
+    deadBosses().clear();
     locked = DISCOVERY_LOCK_DEFAULT != 0 ||
              GetPrivateProfileIntW(L"PyroProgression", L"LockDiscoveredRegions", 0,
                                    L".\\Mods\\PyroProgression.ini") != 0;
@@ -199,7 +229,7 @@ int biome(IntVector2 r) {
 // The player level enemies in region r scale from.
 int basis(IntVector2 r) {
     auto it = regions().find(regionKey(r));
-    return locked && it != regions().end() ? it->second : playerLevel();
+    return locked && it != regions().end() ? it->second : groupLevel();
 }
 
 // --- Item drop hook -----------------------------------------------------------
@@ -240,7 +270,7 @@ uint64_t locationKey(cube::World *w, const LongVector3 &pos, int *type = nullptr
 }
 uint64_t creatureLocation(cube::World *w, cube::Creature *c) {
     // Creatures rarely leave a location; refresh roughly every two seconds.
-    auto &entry = creatureLocations[c->id];
+    auto &entry = creatureLocations()[c->id];
     if (entry.second == 0 || ticks - entry.second > 120)
         entry = {locationKey(w, c->entity_data.position), ticks | 1};
     return entry.first;
@@ -254,7 +284,7 @@ bool isBoss(cube::Creature *c) {
 // A location boss's death completes its location. Completed locations stop
 // using the locked region baseline and follow the current group level again.
 void recordBossDeath(cube::World *w, cube::Creature *c) {
-    if (!w || !c || !isBoss(c) || !deadBosses.emplace(c->id, 1).second)
+    if (!w || !c || !isBoss(c) || !deadBosses().emplace(c->id, 1).second)
         return;
     int type = 0;
     uint64_t key = locationKey(w, c->entity_data.position, &type);
@@ -262,7 +292,7 @@ void recordBossDeath(cube::World *w, cube::Creature *c) {
     if (!key)
         key = locationKey(w, c->entity_data.some_position, &type);
     // Lakes (13) and lava lakes (14) host other mods' roaming bosses; never completable.
-    if (key && type != 13 && type != 14 && completed.emplace(key, 1).second)
+    if (key && type != 13 && type != 14 && completed().emplace(key, 1).second)
         save('C', key, 1);
 }
 LootContext lootContext(cube::World *w, const LongVector3 *pos) {
@@ -318,19 +348,19 @@ void drop(cube::World *w, cube::Item *i, LongVector3 *pos, float a, float b, int
                 context.biome = biome(creatureRegion(source));
             }
             auto key = itemKey(i);
-            auto existing = rarities.find(key);
-            if (existing == rarities.end()) {
+            auto existing = rarities().find(key);
+            if (existing == rarities().end()) {
                 finalRarity = progression::lootRarity(context.biome, key, context.dungeon);
                 assignGear(
                     i, progression::lootLevel(player, enemy, context.biome, key, context.dungeon));
-                rarities.emplace(key, finalRarity);
+                rarities().emplace(key, finalRarity);
                 save('T', key, finalRarity);
             } else {
                 finalRarity = existing->second;
-                auto level = gear.find(key);
+                auto level = gear().find(key);
                 // Reused native seeds can appear in a later reward. Gear the
                 // player already owns stays fixed; a new drop cannot be below P.
-                assignGear(i, level == gear.end() ? player : std::max(player, level->second));
+                assignGear(i, level == gear().end() ? player : std::max(player, level->second));
             }
         }
     }
@@ -341,7 +371,7 @@ using CreateCharacterFn = void (*)(cube::Game *);
 CreateCharacterFn originalCreateCharacter = nullptr;
 void createCharacter(cube::Game *g) {
     originalCreateCharacter(g);
-    std::lock_guard<std::recursive_mutex> guard(gate);
+    std::lock_guard<std::recursive_mutex> guard(gate());
     sessionPlayer = nullptr;
     session();
     if (sessionPlayer && playerLevel() == 1) {
@@ -394,7 +424,7 @@ int RelativeItemLevel(cube::Item *i) {
         return it->second;
     int player = playerLevel();
     registerGear(i, progression::lootLevel(player, player, 0, k));
-    return gear[k];
+    return gear()[k];
 }
 // Level of a non-player, non-pet creature, relative to the player and its region.
 int RelativeCreatureLevel(cube::Creature *c) {
@@ -409,10 +439,18 @@ int RelativeCreatureLevel(cube::Creature *c) {
     auto g = cube::GetGame();
     IntVector2 r = creatureRegion(c);
     int base = basis(r);
-    if (locked && !completed.empty() && completed.count(creatureLocation(g->world, c)))
+    if (locked && !completed().empty() && completed().count(creatureLocation(g->world, c)))
         base = groupLevel();
     return progression::enemyLevel(base, biome(r),
                                    progression::regionRoll(g->world->seed, r.x, r.y), c->id);
+}
+// A boss's death (from the death callback) may complete its native location.
+void RelativeCreatureDeath(cube::Creature *c) {
+    std::lock_guard<std::recursive_mutex> guard(gate());
+    session();
+    auto g = cube::GetGame();
+    if (sessionPlayer && g)
+        recordBossDeath(g->world, c);
 }
 // Per tick: with the discovery lock on, records the level the player's current
 // region was first visited at.
@@ -421,8 +459,8 @@ void RelativeTick(cube::Game *g) {
     session();
     if (!sessionPlayer || !g || !g->world)
         return;
-    if (++ticks % 600 == 0 && creatureLocations.size() > 4096)
-        creatureLocations.clear();
+    if (++ticks % 600 == 0 && creatureLocations().size() > 4096)
+        creatureLocations().clear();
     // Death callbacks may not fire for creatures another peer kills, so dying
     // bosses visible in this world are recorded as well.
     for (auto c : g->world->creatures)
@@ -433,8 +471,9 @@ void RelativeTick(cube::Game *g) {
         auto p = sessionPlayer->entity_data.position;
         g->world->GetRegion(&r, blockFromDots(p.x), blockFromDots(p.y));
         auto key = regionKey(r);
-        if (regions().emplace(key, playerLevel()).second)
-            save('R', key, playerLevel());
+        int level = groupLevel();
+        if (regions().emplace(key, level).second)
+            save('R', key, level);
     }
 }
 // Hooks the native item drop function. Returns false (changing nothing) if its
