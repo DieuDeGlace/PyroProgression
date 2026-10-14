@@ -32,22 +32,61 @@ extern "C" void OverwriteItemName(cube::Item * item, std::wstring * string)
 	*string = buffer + *string;
 }
 
+// Optional OverworldEvents query: 1 = this villager's town can offer an event,
+// 2 = the event taken from its town is ready to hand in, 0 = nothing.
+static int QuestMarker(cube::Creature* creature)
+{
+	using Query = int (*)(cube::Creature*);
+	static Query query = nullptr;
+	static bool resolved = false;
+	if (!resolved)
+	{
+		// OverworldEvents may load after this mod; resolve until it is found.
+		if (auto module = GetModuleHandleW(L"OverworldEvents.dll"))
+		{
+			query = reinterpret_cast<Query>(GetProcAddress(module, "OverworldEventQuestMarker"));
+			resolved = true;
+		}
+	}
+	return query ? query(creature) : 0;
+}
+
 extern "C" void LevelDisplayOverwriteCreature(cube::Creature* creature, void* unk)
 {
+	// Non-combat objects (examination props such as chests, sacks and cages,
+	// and inanimate actors) have no level, like native village props.
+	char behaviour = creature->entity_data.hostility_type;
+	if (behaviour == (char)cube::Creature::EntityBehaviour::ExamineObject ||
+		behaviour == (char)cube::Creature::EntityBehaviour::Inanimate)
+	{
+		return;
+	}
+
+	const wchar_t* hint = L"";
+	switch (QuestMarker(creature))
+	{
+	case 1:
+		hint = L"! "; // Offers an event.
+		break;
+	case 2:
+		hint = L"? "; // Event done: speak to hand it in.
+		break;
+	}
+
 	wchar_t buffer[250];
 	double item_level = GetCreatureLevel(creature);
 
 	if (item_level > 1e6)
 	{
-		swprintf_s(buffer, 250, L"LV %.2fM ", item_level / 1e6);
+		swprintf_s(buffer, 250, L"%sLV %.2fM ", hint, item_level / 1e6);
 	}
 	else if (item_level > 1e3)
 	{
-		swprintf_s(buffer, 250, L"LV %.2fK ", item_level / 1e3);
+		swprintf_s(buffer, 250, L"%sLV %.2fK ", hint, item_level / 1e3);
 	}
 	else
 	{
-		swprintf_s(buffer, 250, L"LV %.0f ", item_level);
+		swprintf_s(buffer, 250, L"%sLV %.0f ", hint, item_level);
 	}
 	PutText(unk, buffer);
 	return;
