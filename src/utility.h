@@ -14,4 +14,5 @@ unsigned long long PyroRand(unsigned long long seed);
 int RelativeItemLevel(cube::Item *item);
 int RelativeCreatureLevel(cube::Creature *creature);
 void RelativeTick(cube::Game *game);
+void RelativeCreatureDeath(cube::Creature *creature);
 bool SetupRelativeLoot();

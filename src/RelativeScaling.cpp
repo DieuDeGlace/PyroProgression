@@ -28,7 +28,10 @@ constexpr int MAX_STORED_LEVEL = 10000000;    // Saved levels above this are ign
 // Defer containers until then rather than allocating during DLL attachment.
 struct Data {
     std::recursive_mutex gate;
-    std::unordered_map<uint64_t, int> gear, regions, biomes, rarities;
+    std::unordered_map<uint64_t, int> gear, regions, biomes, rarities, completed;
+    // Creature ID -> nearest native location key (0 outside) and the tick it was resolved.
+    std::unordered_map<int64_t, std::pair<uint64_t, unsigned>> creatureLocations;
+    std::unordered_map<int64_t, int> deadBosses;
 };
 Data &data() {
     static Data value;
@@ -39,6 +42,9 @@ Data &data() {
 #define regions data().regions
 #define biomes data().biomes
 #define rarities data().rarities
+#define completed data().completed
+#define creatureLocations data().creatureLocations
+#define deadBosses data().deadBosses
 cube::Creature *sessionPlayer = nullptr;
 cube::World *sessionWorld = nullptr;
 uint64_t identity = 0; // Hash of world seed, world name and character name.
@@ -150,6 +156,8 @@ void session() {
                     gear[key] = l;
                 else if (kind == 'R')
                     regions[key] = l;
+                else if (kind == 'C')
+                    completed[key] = l;
             }
         }
         loaded = true;
@@ -167,9 +175,13 @@ void session() {
     sessionWorld = g->world;
     identity = nextIdentity;
     biomes.clear();
+    creatureLocations.clear();
+    deadBosses.clear();
     locked = DISCOVERY_LOCK_DEFAULT != 0 ||
              GetPrivateProfileIntW(L"PyroProgression", L"LockDiscoveredRegions", 0,
                                    L".\\Mods\\PyroProgression.ini") != 0;
+    highestPlayer = GetPrivateProfileIntW(L"PyroProgression", L"ScaleToHighestPlayer", 1,
+                                          L".\\Mods\\PyroProgression.ini") != 0;
     int player = playerLevel();
     visitOwnedGear(p, [player](cube::Item *item) { registerOwnedGear(item, player); });
 }
@@ -208,6 +220,51 @@ struct LootContext {
     int biome = 0;
     bool dungeon = false;
 };
+// The nearest descriptor is returned outside the actual location as well.
+bool nativeLocation(cube::World *w, int x, int y, NativeLocation *location) {
+    *location = {};
+    reinterpret_cast<void (*)(cube::World *, int, int, NativeLocation *)>(CWOffset(0x35ce0))(
+        w, x, y, location);
+    return std::isfinite(location->influence) && location->influence > 0;
+}
+// Stable per character/world key of the native location containing pos, or 0.
+uint64_t locationKey(cube::World *w, const LongVector3 &pos, int *type = nullptr) {
+    NativeLocation location;
+    if (!nativeLocation(w, blockCoordinate(pos.x), blockCoordinate(pos.y), &location))
+        return 0;
+    if (type)
+        *type = location.type;
+    return progression::mix(identity ^
+                            progression::regionRoll(location.type, location.x, location.y)) |
+           1;
+}
+uint64_t creatureLocation(cube::World *w, cube::Creature *c) {
+    // Creatures rarely leave a location; refresh roughly every two seconds.
+    auto &entry = creatureLocations[c->id];
+    if (entry.second == 0 || ticks - entry.second > 120)
+        entry = {locationKey(w, c->entity_data.position), ticks | 1};
+    return entry.first;
+}
+bool isBoss(cube::Creature *c) {
+    auto flags = c->entity_data.appearance.flags2;
+    return c->entity_data.hostility_type == cube::Creature::EntityBehaviour::Hostile &&
+           (flags & (1u << int(cube::Creature::AppearanceModifiers::IsBoss) |
+                     1u << int(cube::Creature::AppearanceModifiers::IsNamedBoss))) != 0;
+}
+// A location boss's death completes its location. Completed locations stop
+// using the locked region baseline and follow the current group level again.
+void recordBossDeath(cube::World *w, cube::Creature *c) {
+    if (!w || !c || !isBoss(c) || !deadBosses.emplace(c->id, 1).second)
+        return;
+    int type = 0;
+    uint64_t key = locationKey(w, c->entity_data.position, &type);
+    // Knockback can carry a boss past the footprint; its spawn point is inside.
+    if (!key)
+        key = locationKey(w, c->entity_data.some_position, &type);
+    // Lakes (13) and lava lakes (14) host other mods' roaming bosses; never completable.
+    if (key && type != 13 && type != 14 && completed.emplace(key, 1).second)
+        save('C', key, 1);
+}
 LootContext lootContext(cube::World *w, const LongVector3 *pos) {
     LootContext result;
     if (!pos)
@@ -216,11 +273,8 @@ LootContext lootContext(cube::World *w, const LongVector3 *pos) {
     IntVector2 region;
     w->GetRegion(&region, x, y);
     result.biome = biome(region);
-    NativeLocation location{};
-    reinterpret_cast<void (*)(cube::World *, int, int, NativeLocation *)>(CWOffset(0x35ce0))(
-        w, x, y, &location);
-    // The nearest descriptor is returned outside the actual location as well.
-    if (!std::isfinite(location.influence) || location.influence <= 0)
+    NativeLocation location;
+    if (!nativeLocation(w, x, y, &location))
         return result;
     result.dungeon = progression::dungeonType(location.type);
     if (!result.dungeon && (location.type == 5 || location.type == 9)) {
@@ -354,7 +408,10 @@ int RelativeCreatureLevel(cube::Creature *c) {
         return c->entity_data.level;
     auto g = cube::GetGame();
     IntVector2 r = creatureRegion(c);
-    return progression::enemyLevel(basis(r), biome(r),
+    int base = basis(r);
+    if (locked && !completed.empty() && completed.count(creatureLocation(g->world, c)))
+        base = groupLevel();
+    return progression::enemyLevel(base, biome(r),
                                    progression::regionRoll(g->world->seed, r.x, r.y), c->id);
 }
 // Per tick: with the discovery lock on, records the level the player's current
@@ -364,6 +421,13 @@ void RelativeTick(cube::Game *g) {
     session();
     if (!sessionPlayer || !g || !g->world)
         return;
+    if (++ticks % 600 == 0 && creatureLocations.size() > 4096)
+        creatureLocations.clear();
+    // Death callbacks may not fire for creatures another peer kills, so dying
+    // bosses visible in this world are recorded as well.
+    for (auto c : g->world->creatures)
+        if (c && c->entity_data.HP <= 0 && isBoss(c))
+            recordBossDeath(g->world, c);
     if (locked) {
         IntVector2 r;
         auto p = sessionPlayer->entity_data.position;
