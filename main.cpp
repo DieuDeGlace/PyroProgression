@@ -193,6 +193,7 @@ class Mod : GenericMod {
         if (creature == nullptr) {
             return;
         }
+        RelativeCreatureDeath(creature);
 
         // Set correct position for items to drop
         if (creature->entity_data.current_region == IntVector2(0, 0)) {

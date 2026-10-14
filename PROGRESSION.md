@@ -3,6 +3,10 @@ PyroProgression v1.4 — relative progression variants
 PlayerRelative (`main`): enemy numeric levels follow the player's current level. Installed by default.
 DiscoveryLocked (`discovery-locked`): the first entry into a native region records the player's level as that region's permanent baseline. This includes its named locations. Enemy species and enemy star rarity remain unchanged in both variants. Use only one progression DLL at a time.
 
+Multiplayer: enemy levels and new discovery baselines use the highest player level in the session (the local player and every other player currently in the world), so peers compute the same enemy levels. Each player's new gear level, owned gear and XP still use that player's own level; lower-level players earn the existing higher-enemy XP bonus. Set `ScaleToHighestPlayer=0` under `[PyroProgression]` in `Mods/PyroProgression.ini` to scale to the local player only.
+
+Completed locations: when a boss dies inside a native location, that location is recorded as completed. In DiscoveryLocked, enemies inside a completed location stop using the region's locked baseline and follow the current (highest) player level again; the rest of the region stays locked. Completion is recorded from boss kills made with this version installed; locations cleared before that are not known to the mod and stay locked.
+
 Enemy levels use the current player level in PlayerRelative and the recorded region baseline in DiscoveryLocked:
 
 | Difficulty | Biomes | Numeric enemy level |
@@ -32,7 +36,7 @@ Dungeon context is resolved from the hostile source position, or the drop positi
 
 Unregistered equipped/inventory gear gets the player's level once and then keeps it. Confirming creation of a fresh level-1 character forces all starter equipment and inventory gear to level 1, including Monk gear, through the inspected Steam character-creation hook at RVA `0x9ea10`. Existing owned gear keeps its recorded level through player leveling and item upgrades. Automatic legacy repair requires all three markers: the owned item's native region is (0,0), its saved level exactly matches the old distance calculation, and it exceeds the maximum relative loot level. Older distance-based records that no longer retain these markers require a targeted state repair.
 
-Item identity combines character/world, category, item ID, original modifier and material. Region, rarity and spirit changes preserve that identity and the existing item's level. State persists in `Mods/PyroRelativeLevels.state`: `G` records store gear levels, `R` records store discovered region baselines, and `T` records store selected final native star rarity. Keep this file with character save backups.
+Item identity combines character/world, category, item ID, original modifier and material. Region, rarity and spirit changes preserve that identity and the existing item's level. State persists in `Mods/PyroRelativeLevels.state`: `G` records store gear levels, `R` records store discovered region baselines, and `T` records store selected final native star rarity, and `C` records store completed locations. Keep this file with character save backups.
 
 The v1.4 XP requirement curve and player/enemy stat formulas are retained. Relative enemy levels feed the existing formulas. The higher-level XP bonus is capped at a 20-level difference to avoid exponential overflow. `/recenter` no longer moves the progression origin or heals creatures. Existing distance-based prices for non-gear and gold bag values remain as before.
 
