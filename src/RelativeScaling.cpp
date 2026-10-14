@@ -1,3 +1,12 @@
+// Player-relative progression: enemy levels follow the player's level (scaled
+// up in harder biomes, with a fixed per-region roll), and every piece of gear is
+// given a fixed level when first seen (at drop time, or its legacy level for
+// gear owned before this mod). Levels are persisted in
+// Mods/PyroRelativeLevels.state, keyed by world, character and item.
+//
+// Optional "discovery lock" (INI LockDiscoveredRegions=1 or the
+// DISCOVERY_LOCK_DEFAULT build flag): a region keeps the player level it was
+// first visited at, instead of following the player.
 #include "utility.h"
 #include "RelativeRules.h"
 #include "NativeLootAdapter.h"
@@ -10,6 +19,11 @@
 #define DISCOVERY_LOCK_DEFAULT 0
 #endif
 namespace {
+// RVAs in the supported cubeworld.exe.
+constexpr uintptr_t BIOME_AT_RVA = 0x2b9080;  // int (World*, regionX, regionY)
+constexpr uintptr_t DROP_ITEM_RVA = 0x2a5b70; // Hooked: drops an item into the world.
+constexpr int MAX_STORED_LEVEL = 10000000;    // Saved levels above this are ignored.
+
 // SDK allocations use the game's allocator, available after ModPreInitialize.
 // Defer containers until then rather than allocating during DLL attachment.
 struct Data {
@@ -33,27 +47,22 @@ Data &data() {
 #define deadBosses data().deadBosses
 cube::Creature *sessionPlayer = nullptr;
 cube::World *sessionWorld = nullptr;
-uint64_t identity = 0;
-unsigned ticks = 0;
-bool loaded = false, locked = DISCOVERY_LOCK_DEFAULT != 0, highestPlayer = true;
+uint64_t identity = 0; // Hash of world seed, world name and character name.
+bool loaded = false, locked = DISCOVERY_LOCK_DEFAULT != 0;
 const char *statePath = "Mods/PyroRelativeLevels.state";
-// The local player's own level: owned gear, new loot and XP stay personal.
+
 int playerLevel() {
     auto g = cube::GetGame();
     auto p = g && g->world ? g->GetPlayer() : nullptr;
     return p ? std::max(1, int(p->entity_data.level)) : 1;
 }
-// Enemy scaling and discovery baselines follow the highest-level player in the
-// session, so every peer computes the same world levels in multiplayer.
-int groupLevel() {
-    int level = playerLevel();
-    auto g = cube::GetGame();
-    if (!highestPlayer || !g || !g->world)
-        return level;
-    for (auto c : g->world->creatures)
-        if (c && c->entity_data.hostility_type == cube::Creature::EntityBehaviour::Player)
-            level = std::max(level, progression::boundedPlayerLevel(int(c->entity_data.level)));
-    return level;
+// Gear categories (3..9) get a fixed relative level; other items keep the legacy one.
+bool isGear(const cube::Item *i) {
+    return i->category >= 3 && i->category <= 9;
+}
+// Block coordinate (floor division) of a dot coordinate.
+int blockFromDots(int64_t n) {
+    return int(n / 65536 - (n < 0 && n % 65536 != 0));
 }
 uint64_t itemKey(cube::Item *i) {
     uint64_t h = identity;
@@ -66,15 +75,17 @@ uint64_t itemKey(cube::Item *i) {
 uint64_t regionKey(IntVector2 r) {
     return progression::mix(identity ^ progression::regionRoll(0, r.x, r.y));
 }
+// Appends one record ('G' gear or 'R' region) to the state file.
 void save(char kind, uint64_t key, int level) {
     std::ofstream out(statePath, std::ios::app);
     out << kind << ' ' << key << ' ' << level << '\n';
 }
+// Records a gear level the first time an item is seen; later calls keep the first level.
 void registerGear(cube::Item *i, int level) {
-    if (!i || i->category < 3 || i->category > 9)
+    if (!i || !isGear(i))
         return;
     auto k = itemKey(i);
-    if (gear.emplace(k, std::max(1, level)).second)
+    if (gear().emplace(k, std::max(1, level)).second)
         save('G', k, std::max(1, level));
 }
 void assignGear(cube::Item *i, int level) {
@@ -174,20 +185,24 @@ void session() {
     int player = playerLevel();
     visitOwnedGear(p, [player](cube::Item *item) { registerOwnedGear(item, player); });
 }
+// Native biome of a region (cached per session).
 int biome(IntVector2 r) {
     auto key = progression::regionRoll(0, r.x, r.y);
-    auto it = biomes.find(key);
-    if (it != biomes.end())
+    auto it = biomes().find(key);
+    if (it != biomes().end())
         return it->second;
     auto g = cube::GetGame();
-    int b = ((int (*)(cube::World *, int, int))CWOffset(0x2b9080))(g->world, r.x, r.y);
-    biomes[key] = b;
+    int b = ((int (*)(cube::World *, int, int))CWOffset(BIOME_AT_RVA))(g->world, r.x, r.y);
+    biomes()[key] = b;
     return b;
 }
+// The player level enemies in region r scale from.
 int basis(IntVector2 r) {
-    auto it = regions.find(regionKey(r));
-    return locked && it != regions.end() ? it->second : groupLevel();
+    auto it = regions().find(regionKey(r));
+    return locked && it != regions().end() ? it->second : playerLevel();
 }
+
+// --- Item drop hook -----------------------------------------------------------
 using DropFn = void (*)(cube::World *, cube::Item *, LongVector3 *, float, float, int,
                         cube::Creature *, uint64_t);
 DropFn originalDrop = nullptr;
@@ -284,7 +299,7 @@ void drop(cube::World *w, cube::Item *i, LongVector3 *pos, float a, float b, int
           cube::Creature *source, uint64_t owner) {
     int finalRarity = -1;
     {
-        std::lock_guard<std::recursive_mutex> guard(gate);
+        std::lock_guard<std::recursive_mutex> guard(gate());
         session();
         // Manual-drop dispatch can remove the stack before reaching this hook.
         // Its player source still identifies existing gear that must not reroll.
@@ -362,25 +377,28 @@ bool installEntryHook(unsigned char *site, const unsigned char *expected, size_t
     return true;
 }
 } // namespace
+
+// Level shown/used for an item: the fixed relative level for gear, legacy otherwise.
 int RelativeItemLevel(cube::Item *i) {
-    std::lock_guard<std::recursive_mutex> guard(gate);
+    std::lock_guard<std::recursive_mutex> guard(gate());
     session();
     if (!i)
         return 1;
     if (!sessionPlayer)
         return 1;
-    if (i->category < 3 || i->category > 9)
+    if (!isGear(i))
         return legacy(i);
     auto k = itemKey(i);
-    auto it = gear.find(k);
-    if (it != gear.end())
+    auto it = gear().find(k);
+    if (it != gear().end())
         return it->second;
     int player = playerLevel();
     registerGear(i, progression::lootLevel(player, player, 0, k));
     return gear[k];
 }
+// Level of a non-player, non-pet creature, relative to the player and its region.
 int RelativeCreatureLevel(cube::Creature *c) {
-    std::lock_guard<std::recursive_mutex> guard(gate);
+    std::lock_guard<std::recursive_mutex> guard(gate());
     session();
     if (!c)
         return 1;
@@ -396,15 +414,10 @@ int RelativeCreatureLevel(cube::Creature *c) {
     return progression::enemyLevel(base, biome(r),
                                    progression::regionRoll(g->world->seed, r.x, r.y), c->id);
 }
-void RelativeCreatureDeath(cube::Creature *c) {
-    std::lock_guard<std::recursive_mutex> guard(gate);
-    session();
-    auto g = cube::GetGame();
-    if (sessionPlayer && g)
-        recordBossDeath(g->world, c);
-}
+// Per tick: with the discovery lock on, records the level the player's current
+// region was first visited at.
 void RelativeTick(cube::Game *g) {
-    std::lock_guard<std::recursive_mutex> guard(gate);
+    std::lock_guard<std::recursive_mutex> guard(gate());
     session();
     if (!sessionPlayer || !g || !g->world)
         return;
@@ -418,16 +431,16 @@ void RelativeTick(cube::Game *g) {
     if (locked) {
         IntVector2 r;
         auto p = sessionPlayer->entity_data.position;
-        auto block = [](int64_t n) { return int(n / 65536 - (n < 0 && n % 65536 != 0)); };
-        g->world->GetRegion(&r, block(p.x), block(p.y));
+        g->world->GetRegion(&r, blockFromDots(p.x), blockFromDots(p.y));
         auto key = regionKey(r);
-        int level = groupLevel();
-        if (regions.emplace(key, level).second)
-            save('R', key, level);
+        if (regions().emplace(key, playerLevel()).second)
+            save('R', key, playerLevel());
     }
 }
+// Hooks the native item drop function. Returns false (changing nothing) if its
+// prologue is not exactly as expected.
 bool SetupRelativeLoot() {
-    auto site = (unsigned char *)CWOffset(0x2a5b70);
+    auto site = (unsigned char *)CWOffset(DROP_ITEM_RVA);
     const unsigned char expected[14] = {0x48, 0x8b, 0xc4, 0x55, 0x56, 0x57, 0x41,
                                         0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57};
     if (memcmp(site, expected, 14) != 0)
@@ -445,9 +458,11 @@ bool SetupRelativeLoot() {
                             reinterpret_cast<void **>(&originalCreateCharacter));
 }
 extern "C" void ModPreInitialize();
+// Diagnostic export: writes the levels of nearby enemies and some owned items
+// to .mod-work/PyroProgression/live-audit.txt.
 EXPORT DWORD WINAPI AuditRelativeProgression(void *) {
     ModPreInitialize();
-    std::lock_guard<std::recursive_mutex> guard(gate);
+    std::lock_guard<std::recursive_mutex> guard(gate());
     auto g = cube::GetGame();
     if (!g || !g->world || !g->GetPlayer())
         return 0;

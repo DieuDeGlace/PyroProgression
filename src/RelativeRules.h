@@ -1,7 +1,10 @@
 #pragma once
+// Pure level rules for player-relative progression (see RelativeScaling.cpp).
+// No game dependencies; tested by RulesTest.cpp.
 #include <cstdint>
 #include <algorithm>
 namespace progression {
+// 64-bit finaliser (SplitMix64) used for all deterministic hashes.
 inline uint64_t mix(uint64_t v) {
     v ^= v >> 30;
     v *= 0xbf58476d1ce4e5b9ULL;
@@ -9,10 +12,12 @@ inline uint64_t mix(uint64_t v) {
     v *= 0x94d049bb133111ebULL;
     return v ^ (v >> 31);
 }
+// Stable random value for region (x, y) in a world.
 inline uint64_t regionRoll(int seed, int x, int y) {
     return mix(uint32_t(seed) ^ mix(uint32_t(x)) ^
                mix(uint64_t(uint32_t(y)) + 0x9e3779b97f4a7c15ULL));
 }
+// Difficulty tier of a native biome ID: 0 normal, 1 harder, 2 hardest.
 inline int tier(int biome) {
     switch (biome) {
     case 4:
