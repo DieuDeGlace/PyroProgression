@@ -8,6 +8,7 @@
 // Includes for the self written hooks.
 // For example: #include "src/hooks/a_hook.h"
 #include "src/utility.h"
+#include "src/ClassArmorRules.h"
 #include "src/XPOverwrite.h"
 #include "src/LevelDisplayOverwrite.h"
 #include "src/GearScalingOverWrite.h"
@@ -295,6 +296,9 @@ class Mod : GenericMod {
     }
 
     virtual void OnClassCanWearItem(cube::Item *item, int classType, bool *wearable) override {
+        // Never another class's base armor (e.g. iron plate on a rogue).
+        if (item && !classarmor::allowed(item->category, item->material, classType))
+            *wearable = false;
         cube::Game *game = cube::GetGame();
 
         if (!game) {
