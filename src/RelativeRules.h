@@ -98,10 +98,12 @@ inline int lootLevel(int player, int enemy, int biome, uint64_t roll, bool dunge
     int ceiling = enemy > player ? std::min(enemy, maximumLootLevel(player)) : player + t + 1;
     return player + 1 + int(mix(roll + 1) % uint64_t(ceiling - player));
 }
-inline bool legacyDistanceArtifact(int player, int saved, int legacy, bool originRegion) {
-    // Native starter gear can carry the (0,0) region sentinel. Only repair saved
-    // records that still match that distance artifact and exceed relative loot's ceiling.
-    return originRegion && saved == legacy && saved > maximumLootLevel(player);
+inline bool legacyDistanceArtifact(int player, int saved, int legacy, bool /*originRegion*/) {
+    // A record that still equals the old distance-from-origin level and exceeds
+    // relative loot's ceiling was never a relative level, whatever the item's
+    // region: starter gear tagged with a far spawn region (-15680,-1938) got
+    // ~54,000 levels and a level-1 character ~262k maximum health.
+    return saved == legacy && saved > maximumLootLevel(player);
 }
 inline int ownedGearLevel(int player, int saved, int legacy, bool originRegion, uint64_t /*roll*/) {
     if (saved > 0 && !legacyDistanceArtifact(player, saved, legacy, originRegion))
