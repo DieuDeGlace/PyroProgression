@@ -125,9 +125,13 @@ static void testOwnedGearRegistrationAndMigration() {
         assert(progression::ownedGearLevel(50, 65, 65, true, k) == 65);
         int ceiling = progression::maximumLootLevel(50);
         assert(progression::ownedGearLevel(50, ceiling, ceiling, true, k) == ceiling);
-        // A high record without both artifact markers is preserved.
-        assert(progression::ownedGearLevel(1, 47500, 47500, false, k) == 47500);
+        // The distance artifact is repaired whatever the item's region (starter
+        // gear tagged with a far spawn region).
+        assert(progression::ownedGearLevel(1, 47500, 47500, false, k) == 1);
+        assert(progression::ownedGearLevel(1, 53818, 53818, false, k) == 1);
+        // A high record that does not match the old distance level is preserved.
         assert(progression::ownedGearLevel(1, 47500, 47501, true, k) == 47500);
+        assert(progression::ownedGearLevel(1, 47500, 47501, false, k) == 47500);
         assert(progression::ownedGearLevel(50, 0, 47500, true, k) == 50);
     }
 }
