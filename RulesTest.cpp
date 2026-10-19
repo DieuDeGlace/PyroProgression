@@ -129,9 +129,14 @@ static void testOwnedGearRegistrationAndMigration() {
         // gear tagged with a far spawn region).
         assert(progression::ownedGearLevel(1, 47500, 47500, false, k) == 1);
         assert(progression::ownedGearLevel(1, 53818, 53818, false, k) == 1);
-        // A high record that does not match the old distance level is preserved.
-        assert(progression::ownedGearLevel(1, 47500, 47501, true, k) == 47500);
-        assert(progression::ownedGearLevel(1, 47500, 47501, false, k) == 47500);
+        // An impossible record is repaired even when today's distance level
+        // differs (it was measured from another base region).
+        assert(progression::ownedGearLevel(1, 53818, 12, false, k) == 1);
+        assert(progression::ownedGearLevel(1, 47500, 47501, true, k) == 1);
+        // A record near the ceiling that does not match the distance level stays.
+        int near = progression::maximumLootLevel(1) * 4 + 100;
+        assert(progression::ownedGearLevel(1, near, 12, false, k) == near);
+        assert(progression::ownedGearLevel(50, 70, 12, false, k) == 70);
         assert(progression::ownedGearLevel(50, 0, 47500, true, k) == 50);
     }
 }

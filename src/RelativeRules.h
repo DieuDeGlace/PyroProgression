@@ -99,11 +99,13 @@ inline int lootLevel(int player, int enemy, int biome, uint64_t roll, bool dunge
     return player + 1 + int(mix(roll + 1) % uint64_t(ceiling - player));
 }
 inline bool legacyDistanceArtifact(int player, int saved, int legacy, bool /*originRegion*/) {
-    // A record that still equals the old distance-from-origin level and exceeds
-    // relative loot's ceiling was never a relative level, whatever the item's
-    // region: starter gear tagged with a far spawn region (-15680,-1938) got
-    // ~54,000 levels and a level-1 character ~262k maximum health.
-    return saved == legacy && saved > maximumLootLevel(player);
+    // Relative loot never exceeds maximumLootLevel(player) (enemy-level loot is
+    // capped to it too), so owned gear far above it is a pre-relative distance
+    // level. The old distance level is measured from the player's current base
+    // region, so a record saved from another region no longer matches `legacy`:
+    // starter gear kept ~54,000 levels and a level-1 character ~262k health.
+    int ceiling = maximumLootLevel(player);
+    return saved > ceiling && (saved == legacy || saved > ceiling * 4 + 100);
 }
 inline int ownedGearLevel(int player, int saved, int legacy, bool originRegion, uint64_t /*roll*/) {
     if (saved > 0 && !legacyDistanceArtifact(player, saved, legacy, originRegion))
