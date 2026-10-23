@@ -45,3 +45,9 @@ unsigned long long PyroRand(unsigned long long seed) {
     auto n = seed * 1103515245 + 12345;
     return (unsigned long long)(n / 65536) % 32768;
 }
+
+// Optional, read-only bridge for encounter difficulty. Uses the same region
+// discovery/completion rules as displayed creature levels.
+EXPORT int PyroProgressionCreatureLevel(cube::Creature *creature) {
+    return GetCreatureLevel(creature);
+}
