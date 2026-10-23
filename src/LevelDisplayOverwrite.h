@@ -32,26 +32,20 @@ extern "C" void OverwriteItemName(cube::Item * item, std::wstring * string)
 	*string = buffer + *string;
 }
 
-// Optional OverworldEvents query: 1 = this villager's town can offer an event,
-// 2 = the event taken from its town is ready to hand in, 0 = nothing.
-static int QuestMarker(cube::Creature* creature)
+// Native nameplate coordinates have already passed the game's line-of-sight
+// and camera tests. The optional event mod renders the supplied sprite there.
+static void QuestIcon(cube::Creature *creature, float x, float y)
 {
-	using Query = int (*)(cube::Creature*);
-	static Query query = nullptr;
-	static bool resolved = false;
-	if (!resolved)
-	{
-		// OverworldEvents may load after this mod; resolve until it is found.
-		if (auto module = GetModuleHandleW(L"OverworldEvents.dll"))
-		{
-			query = reinterpret_cast<Query>(GetProcAddress(module, "OverworldEventQuestMarker"));
-			resolved = true;
-		}
-	}
-	return query ? query(creature) : 0;
+    using Draw = void (*)(cube::Creature *, float, float);
+    static Draw draw = nullptr;
+    if (!draw)
+        if (auto module = GetModuleHandleW(L"OverworldEvents.dll"))
+            draw = reinterpret_cast<Draw>(GetProcAddress(module, "OverworldEventNameplate"));
+    if (draw)
+        draw(creature, x, y);
 }
 
-extern "C" void LevelDisplayOverwriteCreature(cube::Creature* creature, void* unk)
+extern "C" void LevelDisplayOverwriteCreature(cube::Creature* creature, void* unk, float x, float y)
 {
 	// Non-combat objects (examination props such as chests, sacks and cages,
 	// and inanimate actors) have no level, like native village props.
@@ -62,31 +56,22 @@ extern "C" void LevelDisplayOverwriteCreature(cube::Creature* creature, void* un
 		return;
 	}
 
-	const wchar_t* hint = L"";
-	switch (QuestMarker(creature))
-	{
-	case 1:
-		hint = L"! "; // Offers an event.
-		break;
-	case 2:
-		hint = L"? "; // Event done: speak to hand it in.
-		break;
-	}
+	QuestIcon(creature, x, y);
 
 	wchar_t buffer[250];
 	double item_level = GetCreatureLevel(creature);
 
 	if (item_level > 1e6)
 	{
-		swprintf_s(buffer, 250, L"%sLV %.2fM ", hint, item_level / 1e6);
+		swprintf_s(buffer, 250, L"LV %.2fM ", item_level / 1e6);
 	}
 	else if (item_level > 1e3)
 	{
-		swprintf_s(buffer, 250, L"%sLV %.2fK ", hint, item_level / 1e3);
+		swprintf_s(buffer, 250, L"LV %.2fK ", item_level / 1e3);
 	}
 	else
 	{
-		swprintf_s(buffer, 250, L"%sLV %.0f ", hint, item_level);
+		swprintf_s(buffer, 250, L"LV %.0f ", item_level);
 	}
 	PutText(unk, buffer);
 	return;
@@ -107,6 +92,8 @@ __attribute__((naked)) void ASM_LevelDisplayOverwrite() {
 
 		"lea rdx, [rbp - 0x80] \n"
 		"mov rcx, [r14] \n"
+		"movaps xmm2, xmm9 \n"
+		"movaps xmm3, xmm8 \n"
 		"call LevelDisplayOverwriteCreature \n"
 
 		DEREF_JMP(ASM_LevelDisplayOverwrite_jmpback)
